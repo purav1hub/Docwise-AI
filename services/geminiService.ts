@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { AnalysisResult, ComparisonResult, UserType } from "../types";
 
@@ -96,12 +97,8 @@ export const analyzeOrCompare = async (
 ): Promise<{ analysis?: AnalysisResult, comparison?: ComparisonResult }> => {
   try {
     const isComparison = inputs.length > 1;
-    // Use gemini-3-pro-preview for complex multi-doc or web tasks, otherwise flash for speed.
     const modelId = isComparison || inputs.some(i => i.type === 'url') ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
     
-    const contents: any[] = [];
-    
-    // Construct instructions part
     const instructions = `
       You are DocWise AI, a specialized legal document analysis tool.
       Target Language: ${targetLanguage}.
@@ -156,17 +153,20 @@ export const analyzeOrCompare = async (
     const parsed = JSON.parse(text);
     
     if (isComparison) {
+      if (!parsed.docs || !Array.isArray(parsed.docs)) {
+        throw new Error("AI response error: Comparison results were missing.");
+      }
       // Ensure each doc has its original filename attached for the UI
       parsed.docs = parsed.docs.map((doc: any, i: number) => ({
         ...doc,
-        fileName: inputs[i].fileName || `Document ${i + 1}`
+        fileName: inputs[i]?.fileName || `Document ${i + 1}`
       }));
       return { comparison: parsed };
     } else {
       return { 
         analysis: {
           ...parsed,
-          fileName: inputs[0].fileName || 'Pasted Content'
+          fileName: inputs[0]?.fileName || 'Pasted Content'
         } 
       };
     }

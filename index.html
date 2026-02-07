@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocWise AI - Understand What You Sign</title>
 
-    <!-- Tailwind CSS (CDN – OK for development) -->
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
 
     <!-- Google Font -->
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
       rel="stylesheet"
     />
 
@@ -26,6 +26,7 @@
               brand: {
                 50: "#f0f9ff",
                 100: "#e0f2fe",
+                200: "#bae6fd",
                 500: "#0ea5e9",
                 600: "#0284c7",
                 700: "#0369a1",
@@ -44,23 +45,466 @@
         background-color: #f8fafc;
         margin: 0;
       }
+      /* Custom Print Styles */
+      @media print {
+        .print\:hidden { display: none !important; }
+        .print\:p-0 { padding: 0 !important; }
+        .print\:border-0 { border: 0 !important; }
+        .print\:shadow-none { shadow: none !important; }
+      }
+      /* Animation helpers */
+      .animate-in { animation: animateIn 0.5s ease-out; }
+      @keyframes animateIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
     </style>
 
-    <!-- Import map for React + other libs -->
     <script type="importmap">
-      {
-        "imports": {
-          "react": "https://esm.sh/react@19.2.1",
-          "react-dom/client": "https://esm.sh/react-dom@19.2.1/client",
-          "@google/genai": "https://esm.sh/@google/genai@1.33.0",
-          "lucide-react": "https://esm.sh/lucide-react@0.559.0"
-        }
+    {
+      "imports": {
+        "react": "https://esm.sh/react@19.0.0",
+        "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
+        "@google/genai": "https://esm.sh/@google/genai@0.21.0",
+        "lucide-react": "https://esm.sh/lucide-react@0.460.0"
       }
+    }
     </script>
   </head>
 
   <body>
-    <!-- React mounts here -->
     <div id="root"></div>
+
+    <script type="module">
+      import React, { useState, useCallback, useMemo } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import { GoogleGenAI, Type } from '@google/genai';
+      import { 
+        Shield, BookOpen, AlertCircle, Languages, User, Sparkles,
+        UploadCloud, FileText, Loader2, X, FilePlus, Globe, ArrowRight, Link,
+        ShieldCheck, ShieldAlert, AlertTriangle, Calendar, Download, DollarSign,
+        CheckCircle2, ChevronDown, ChevronUp, Award
+      } from 'lucide-react';
+
+      // --- Gemini Service Logic ---
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+      const analysisSchema = {
+        type: Type.OBJECT,
+        properties: {
+          summary: { type: Type.STRING },
+          simpleExplanation: { type: Type.STRING },
+          onePageSummary: { type: Type.STRING },
+          riskScore: { type: Type.INTEGER },
+          riskLevel: { type: Type.STRING },
+          verdict: { type: Type.STRING },
+          verdictReason: { type: Type.STRING },
+          redFlags: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                severity: { type: Type.STRING },
+                location: { type: Type.STRING },
+                oneSided: { type: Type.BOOLEAN }
+              }
+            }
+          },
+          financialBreakdown: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                label: { type: Type.STRING },
+                value: { type: Type.STRING },
+                type: { type: Type.STRING },
+                frequency: { type: Type.STRING }
+              }
+            }
+          },
+          importantDates: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                date: { type: Type.STRING },
+                event: { type: Type.STRING },
+                deadline: { type: Type.BOOLEAN }
+              }
+            }
+          },
+          scamRiskScore: { type: Type.INTEGER },
+          scamAnalysis: { type: Type.STRING },
+          clauses: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                originalTitle: { type: Type.STRING },
+                simplifiedExplanation: { type: Type.STRING },
+                impact: { type: Type.STRING }
+              }
+            }
+          },
+          questionsToAsk: { type: Type.ARRAY, items: { type: Type.STRING } },
+          personalizedWarnings: { type: Type.ARRAY, items: { type: Type.STRING } }
+        }
+      };
+
+      const comparisonSchema = {
+        type: Type.OBJECT,
+        properties: {
+          docs: { type: Type.ARRAY, items: analysisSchema },
+          comparisonSummary: { type: Type.STRING },
+          winner: { type: Type.STRING },
+          winnerReason: { type: Type.STRING },
+          comparisonTable: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                feature: { type: Type.STRING },
+                values: { type: Type.ARRAY, items: { type: Type.STRING } }
+              }
+            }
+          }
+        }
+      };
+
+      const analyzeOrCompare = async (inputs, userType, targetLanguage) => {
+        try {
+          const isComparison = inputs.length > 1;
+          const modelId = isComparison || inputs.some(i => i.type === 'url') ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
+          
+          const instructions = `
+            You are DocWise AI, a specialized legal document analysis tool.
+            Target Language: ${targetLanguage}.
+            User Context: ${userType}.
+            Core Objectives:
+            - DECODE: Translate legal jargon into everyday language.
+            - PROTECT: Highlight unfair, one-sided, or unusual terms.
+            - FINANCIALS: List all fees, penalties, and renewal charges.
+            - SCAM CHECK: Check for red flags indicating fraudulent documents.
+            - DATES: Extract all critical deadlines and durations.
+            ${isComparison ? 'You are comparing multiple documents. Provide an individual analysis for each AND a comprehensive comparison result.' : 'Analyze the provided document thoroughly.'}
+          `;
+
+          const promptParts = [{ text: instructions }];
+          inputs.forEach((input, idx) => {
+            if (isComparison) promptParts.push({ text: `--- START OF DOCUMENT ${idx + 1} (${input.fileName}) ---` });
+            if (input.type === 'file') {
+              promptParts.push({ inlineData: { mimeType: input.mimeType, data: input.data } });
+            } else {
+              promptParts.push({ text: `Source (${input.type}): ${input.data}` });
+            }
+            if (isComparison) promptParts.push({ text: `--- END OF DOCUMENT ${idx + 1} ---` });
+          });
+
+          const response = await ai.models.generateContent({
+            model: modelId,
+            contents: { parts: promptParts },
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: isComparison ? comparisonSchema : analysisSchema,
+            }
+          });
+
+          const parsed = JSON.parse(response.text);
+          if (isComparison) {
+            parsed.docs = parsed.docs.map((doc, i) => ({ ...doc, fileName: inputs[i]?.fileName || `Document ${i + 1}` }));
+            return { comparison: parsed };
+          }
+          return { analysis: { ...parsed, fileName: inputs[0]?.fileName || 'Pasted Content' } };
+        } catch (error) {
+          console.error("Gemini Error:", error);
+          throw new Error("DocWise Analysis failed. Check document quality.");
+        }
+      };
+
+      // --- Components ---
+
+      const RiskGauge = ({ score, level }) => {
+        const getColor = (val) => {
+          if (val < 30) return 'text-green-500 bg-green-50 border-green-200';
+          if (val < 70) return 'text-yellow-500 bg-yellow-50 border-yellow-200';
+          return 'text-red-500 bg-red-50 border-red-200';
+        };
+        const getIcon = (val) => {
+          if (val < 30) return React.createElement(ShieldCheck, { size: 32 });
+          if (val < 70) return React.createElement(AlertTriangle, { size: 32 });
+          return React.createElement(ShieldAlert, { size: 32 });
+        };
+        const colorClass = getColor(score);
+        const radius = 40;
+        const circumference = 2 * Math.PI * radius;
+        const offset = circumference - (score / 100) * circumference;
+
+        return React.createElement('div', { className: `flex items-center p-6 rounded-xl border ${colorClass} transition-all` },
+          React.createElement('div', { className: "relative w-24 h-24 flex-shrink-0 flex items-center justify-center" },
+            React.createElement('svg', { className: "transform -rotate-90 w-full h-full" },
+              React.createElement('circle', { cx: "48", cy: "48", r: radius, stroke: "currentColor", strokeWidth: "8", fill: "transparent", className: "text-white opacity-30" }),
+              React.createElement('circle', { cx: "48", cy: "48", r: radius, stroke: "currentColor", strokeWidth: "8", fill: "transparent", strokeDasharray: circumference, strokeDashoffset: offset, strokeLinecap: "round", className: "transition-all duration-1000 ease-out" })
+            ),
+            React.createElement('div', { className: "absolute inset-0 flex items-center justify-center" }, getIcon(score))
+          ),
+          React.createElement('div', { className: "ml-6" },
+            React.createElement('h4', { className: "text-sm font-semibold uppercase tracking-wider opacity-80" }, "Risk Assessment"),
+            React.createElement('div', { className: "text-3xl font-bold" }, level),
+            React.createElement('p', { className: "text-sm opacity-90 mt-1" }, 
+              "DocWise rates this as ", React.createElement('strong', null, `${score}/100`), " on the risk scale."
+            )
+          )
+        );
+      };
+
+      const ClauseItem = ({ clause }) => {
+        const [isOpen, setIsOpen] = useState(false);
+        return React.createElement('div', { className: "border border-slate-200 rounded-xl bg-white overflow-hidden shadow-sm" },
+          React.createElement('button', { onClick: () => setIsOpen(!isOpen), className: "w-full flex items-center justify-between p-4 hover:bg-slate-50 transition-colors text-left" },
+            React.createElement('div', { className: "flex items-center gap-3" },
+              React.createElement('div', { className: `w-2 h-2 rounded-full ${clause.impact === 'Negative' ? 'bg-red-500' : clause.impact === 'Positive' ? 'bg-green-500' : 'bg-slate-400'}` }),
+              React.createElement('span', { className: "font-bold text-slate-700 text-sm" }, clause.originalTitle || "Agreement Clause")
+            ),
+            isOpen ? React.createElement(ChevronUp, { size: 18, className: "text-slate-400" }) : React.createElement(ChevronDown, { size: 18, className: "text-slate-400" })
+          ),
+          isOpen && React.createElement('div', { className: "p-5 border-t border-slate-100 bg-slate-50/30" },
+            React.createElement('p', { className: "text-slate-600 text-sm leading-relaxed" }, clause.simplifiedExplanation || "No simplified explanation provided.")
+          )
+        );
+      };
+
+      const AnalysisDashboard = ({ data, onReset }) => {
+        const [activeTab, setActiveTab] = useState('one-page');
+        const isComparison = 'comparisonTable' in data;
+        const analysisData = isComparison ? data.docs?.[0] : data;
+
+        if (!analysisData) return React.createElement('div', { className: "p-8 text-center" }, "Error loading analysis data.");
+
+        const handlePrint = () => window.print();
+        const getVerdictStyles = (v) => {
+          if (v === 'High risk') return 'bg-red-600 text-white';
+          if (v === 'Needs attention') return 'bg-yellow-500 text-white';
+          return 'bg-green-600 text-white';
+        };
+
+        return React.createElement('div', { className: "w-full max-w-5xl mx-auto pb-12 print:p-0 animate-in" },
+          React.createElement('div', { className: "flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 print:hidden" },
+            React.createElement('div', null,
+              React.createElement('h2', { className: "text-2xl font-bold text-slate-800" }, "DocWise Report"),
+              React.createElement('p', { className: "text-slate-500" }, isComparison ? `${data.docs?.length || 0} Documents Compared` : (analysisData.fileName || 'Analysis Result'))
+            ),
+            React.createElement('div', { className: "flex gap-2" },
+              React.createElement('button', { onClick: handlePrint, className: "flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors" }, 
+                React.createElement(Download, { size: 16 }), " Export PDF"
+              ),
+              React.createElement('button', { onClick: onReset, className: "px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors" }, "New Scan")
+            )
+          ),
+          React.createElement('div', { className: "flex border-b border-slate-200 mb-8 overflow-x-auto print:hidden" },
+            React.createElement('button', { onClick: () => setActiveTab('one-page'), className: `pb-4 px-6 text-sm font-bold transition-colors whitespace-nowrap ${activeTab === 'one-page' ? 'border-b-2 border-brand-500 text-brand-600' : 'text-slate-500'}` }, "Summary"),
+            isComparison && React.createElement('button', { onClick: () => setActiveTab('comparison'), className: `pb-4 px-6 text-sm font-bold transition-colors whitespace-nowrap ${activeTab === 'comparison' ? 'border-b-2 border-brand-500 text-brand-600' : 'text-slate-500'}` }, "Comparison"),
+            React.createElement('button', { onClick: () => setActiveTab('details'), className: `pb-4 px-6 text-sm font-bold transition-colors whitespace-nowrap ${activeTab === 'details' ? 'border-b-2 border-brand-500 text-brand-600' : 'text-slate-500'}` }, "Full Breakdown"),
+            React.createElement('button', { onClick: () => setActiveTab('risks'), className: `pb-4 px-6 text-sm font-bold transition-colors whitespace-nowrap text-red-600 ${activeTab === 'risks' ? 'border-b-2 border-red-500' : ''}` }, "Red Flags")
+          ),
+          activeTab === 'one-page' && React.createElement('div', { className: "grid md:grid-cols-3 gap-6" },
+            React.createElement('div', { className: "md:col-span-2 space-y-6" },
+              React.createElement('div', { className: "bg-white p-8 rounded-2xl border border-slate-200 shadow-sm" },
+                React.createElement('h3', { className: "text-xl font-bold mb-4 flex items-center gap-2" }, React.createElement(FileText, { className: "text-brand-500" }), "Simplified Summary"),
+                React.createElement('p', { className: "text-slate-700 leading-relaxed text-lg mb-6" }, analysisData.onePageSummary || analysisData.simpleExplanation),
+                React.createElement('div', { className: "grid grid-cols-2 gap-4" },
+                  React.createElement('div', { className: "p-4 bg-red-50 rounded-xl border border-red-100" },
+                    React.createElement('span', { className: "text-xs font-bold text-red-600 uppercase" }, "Risk Level"),
+                    React.createElement('div', { className: "text-xl font-bold text-red-700" }, analysisData.riskLevel || 'Safe')
+                  ),
+                  React.createElement('div', { className: "p-4 bg-indigo-50 rounded-xl border border-indigo-100" },
+                    React.createElement('span', { className: "text-xs font-bold text-indigo-600 uppercase" }, "Verdict"),
+                    React.createElement('div', { className: "text-xl font-bold text-indigo-700" }, analysisData.verdict || 'Mostly normal')
+                  )
+                )
+              ),
+              React.createElement('div', { className: `p-6 rounded-xl flex flex-col justify-center items-center text-center shadow-md ${getVerdictStyles(analysisData.verdict)}` },
+                React.createElement('span', { className: "text-xs uppercase font-bold opacity-80 mb-1" }, "DocWise Conclusion"),
+                React.createElement('div', { className: "text-xl font-black mb-2 leading-tight" }, analysisData.verdict),
+                React.createElement('p', { className: "text-xs opacity-90 leading-tight" }, analysisData.verdictReason)
+              )
+            ),
+            React.createElement('div', { className: "space-y-6" },
+              React.createElement('div', { className: "bg-white p-6 rounded-2xl border border-slate-200 shadow-sm" },
+                React.createElement('h4', { className: "font-bold text-slate-800 mb-4 flex items-center gap-2" }, React.createElement(Calendar, { size: 18, className: "text-brand-500" }), "Deadlines"),
+                React.createElement('div', { className: "space-y-3" },
+                  (analysisData.importantDates ?? []).map((d, i) => React.createElement('div', { key: i, className: `p-3 rounded-lg border ${d.deadline ? 'bg-orange-50 border-orange-200' : 'bg-slate-50 border-slate-100'}` },
+                    React.createElement('div', { className: "text-xs font-bold text-slate-400" }, d.date),
+                    React.createElement('div', { className: "text-sm font-medium" }, d.event)
+                  )),
+                  (analysisData.importantDates ?? []).length === 0 && React.createElement('p', { className: "text-slate-400 text-xs text-center italic" }, "No dates detected.")
+                )
+              ),
+              React.createElement('div', { className: "bg-slate-900 p-6 rounded-2xl text-white shadow-xl" },
+                React.createElement('h4', { className: "font-bold mb-4 flex items-center gap-2 text-red-400" }, React.createElement(ShieldAlert, { size: 18 }), "Scam Detection"),
+                React.createElement('div', { className: "flex items-end gap-3 mb-4" },
+                  React.createElement('div', { className: "text-4xl font-black" }, `${analysisData.scamRiskScore ?? 0}%`),
+                  React.createElement('div', { className: "text-xs font-bold opacity-60 mb-1" }, "Risk Score")
+                ),
+                React.createElement('p', { className: "text-xs opacity-80 leading-relaxed" }, analysisData.scamAnalysis || "Safe markers.")
+              )
+            )
+          ),
+          isComparison && activeTab === 'comparison' && React.createElement('div', { className: "space-y-6" },
+            React.createElement('div', { className: "bg-white p-8 rounded-2xl border border-brand-200 bg-brand-50/20 shadow-sm" },
+              React.createElement('h3', { className: "text-xl font-bold mb-4 flex items-center gap-2 text-brand-900" }, React.createElement(Award, { className: "text-brand-500" }), "Comparison Winner"),
+              React.createElement('div', { className: "p-4 bg-white rounded-xl border border-brand-100 mb-4" },
+                React.createElement('span', { className: "text-xs font-bold text-brand-500 uppercase tracking-widest" }, "DocWise Choice"),
+                React.createElement('div', { className: "text-2xl font-black text-slate-800" }, data.winner)
+              ),
+              React.createElement('p', { className: "text-slate-600" }, data.winnerReason)
+            ),
+            React.createElement('div', { className: "bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden overflow-x-auto" },
+              React.createElement('table', { className: "w-full text-left min-w-[500px]" },
+                React.createElement('thead', { className: "bg-slate-50 border-b border-slate-200" },
+                  React.createElement('tr', null,
+                    React.createElement('th', { className: "p-4 text-sm font-bold text-slate-500 uppercase" }, "Feature"),
+                    (data.docs ?? []).map((d, i) => React.createElement('th', { key: i, className: "p-4 text-sm font-bold text-slate-800" }, d.fileName))
+                  )
+                ),
+                React.createElement('tbody', { className: "divide-y divide-slate-100" },
+                  (data.comparisonTable ?? []).map((row, i) => React.createElement('tr', { key: i, className: "hover:bg-slate-50" },
+                    React.createElement('td', { className: "p-4 text-sm font-bold text-slate-600" }, row.feature),
+                    (row.values ?? []).map((val, vi) => React.createElement('td', { key: vi, className: "p-4 text-sm text-slate-600" }, val))
+                  ))
+                )
+              )
+            )
+          ),
+          activeTab === 'details' && React.createElement('div', { className: "grid md:grid-cols-2 gap-8" },
+            React.createElement('div', { className: "space-y-6" },
+              React.createElement('div', { className: "bg-white p-6 rounded-2xl border border-slate-200 shadow-sm" },
+                React.createElement('h4', { className: "font-bold text-slate-800 mb-4 flex items-center gap-2" }, React.createElement(DollarSign, { className: "text-green-500" }), "Financials"),
+                (analysisData.financialBreakdown ?? []).map((f, i) => React.createElement('div', { key: i, className: "flex justify-between items-center p-3 bg-slate-50 rounded-lg mb-2" },
+                  React.createElement('div', null, React.createElement('span', { className: "text-xs font-bold text-slate-400 mr-2" }, f.type), React.createElement('span', { className: "font-medium" }, f.label)),
+                  React.createElement('div', { className: "text-right font-bold" }, f.value)
+                ))
+              )
+            ),
+            React.createElement('div', { className: "space-y-4" },
+              React.createElement('h4', { className: "font-bold text-slate-800 flex items-center gap-2" }, React.createElement(CheckCircle2, { className: "text-brand-500" }), "Key Clauses"),
+              (analysisData.clauses ?? []).map((c, i) => React.createElement(ClauseItem, { key: i, clause: c }))
+            )
+          ),
+          activeTab === 'risks' && React.createElement('div', { className: "space-y-4" },
+            (analysisData.redFlags ?? []).map((f, i) => React.createElement('div', { key: i, className: `p-6 rounded-2xl border ${f.oneSided ? 'bg-red-50 border-red-200' : 'bg-white'}` },
+              React.createElement('h4', { className: "font-bold text-lg mb-2" }, f.title),
+              React.createElement('p', { className: "text-slate-600" }, f.description)
+            ))
+          )
+        );
+      };
+
+      const FileUpload = ({ onFilesSelect, isLoading }) => {
+        const [selectedFiles, setSelectedFiles] = useState([]);
+        const processFiles = async (files) => {
+          const newFiles = [];
+          for (const file of Array.from(files)) {
+            const base64 = await new Promise((res) => {
+              const r = new FileReader(); r.onload = (e) => res(e.target.result.split(',')[1]); r.readAsDataURL(file);
+            });
+            newFiles.push({ file, base64, mimeType: file.type });
+          }
+          setSelectedFiles([...selectedFiles, ...newFiles]);
+        };
+        return React.createElement('div', { className: "w-full max-w-2xl mx-auto space-y-4" },
+          React.createElement('div', { className: "border-2 border-dashed rounded-2xl p-10 bg-white text-center hover:border-brand-500 transition-all cursor-pointer relative" },
+            React.createElement('input', { type: "file", multiple: true, className: "absolute inset-0 opacity-0 cursor-pointer", onChange: (e) => processFiles(e.target.files), disabled: isLoading }),
+            React.createElement(UploadCloud, { size: 40, className: "mx-auto text-slate-400 mb-4" }),
+            React.createElement('h3', { className: "text-xl font-bold" }, "Drop your documents here"),
+            React.createElement('p', { className: "text-sm text-slate-500" }, "PDF or Images (max 10MB each)")
+          ),
+          selectedFiles.length > 0 && React.createElement('div', { className: "space-y-3" },
+            selectedFiles.map((f, i) => React.createElement('div', { key: i, className: "p-3 bg-white border rounded-xl flex justify-between items-center" }, 
+              React.createElement('span', { className: "text-sm" }, f.file.name),
+              React.createElement('button', { onClick: () => setSelectedFiles(selectedFiles.filter((_, idx) => idx !== i)) }, React.createElement(X, { size: 16 }))
+            )),
+            React.createElement('button', { onClick: () => onFilesSelect(selectedFiles), className: "w-full py-4 bg-brand-600 text-white rounded-xl font-bold flex items-center justify-center gap-2" }, 
+              isLoading && React.createElement(Loader2, { className: "animate-spin" }),
+              selectedFiles.length > 1 ? `Compare ${selectedFiles.length} Docs` : "Analyze Document"
+            )
+          )
+        );
+      };
+
+      const TextInput = ({ onScan, isLoading }) => {
+        const [mode, setMode] = useState('text');
+        const [val, setVal] = useState('');
+        return React.createElement('div', { className: "w-full max-w-2xl mx-auto bg-white rounded-xl border" },
+          React.createElement('div', { className: "flex border-b" },
+            React.createElement('button', { onClick: () => setMode('text'), className: `flex-1 py-3 text-sm font-bold ${mode === 'text' ? 'bg-brand-50 text-brand-600 border-b-2 border-brand-500' : ''}` }, "Paste Text"),
+            React.createElement('button', { onClick: () => setMode('url'), className: `flex-1 py-3 text-sm font-bold ${mode === 'url' ? 'bg-brand-50 text-brand-600 border-b-2 border-brand-500' : ''}` }, "Scan URL")
+          ),
+          React.createElement('div', { className: "p-6 space-y-4" },
+            mode === 'text' ? React.createElement('textarea', { value: val, onChange: (e) => setVal(e.target.value), className: "w-full h-40 p-4 bg-slate-50 border rounded-lg", placeholder: "Paste T&Cs here..." }) :
+              React.createElement('input', { value: val, onChange: (e) => setVal(e.target.value), className: "w-full p-3 bg-slate-50 border rounded-lg", placeholder: "https://example.com/terms" }),
+            React.createElement('button', { onClick: () => onScan({ content: val, type: mode }), className: "w-full py-3 bg-brand-600 text-white rounded-lg font-bold" }, isLoading ? "Scanning..." : "Start AI Scan")
+          )
+        );
+      };
+
+      // --- Main App ---
+      const App = () => {
+        const [status, setStatus] = useState('idle');
+        const [result, setResult] = useState(null);
+        const [inputMode, setInputMode] = useState('file');
+        const [userType, setUserType] = useState('Individual');
+        const [language, setLanguage] = useState('Simple English');
+
+        const processInputs = async (inputs) => {
+          setStatus('analyzing');
+          try {
+            const res = await analyzeOrCompare(inputs, userType, language);
+            setResult(res);
+            setStatus('complete');
+          } catch (e) {
+            alert(e.message);
+            setStatus('idle');
+          }
+        };
+
+        return React.createElement('div', { className: "min-h-screen flex flex-col" },
+          React.createElement('header', { className: "bg-white border-b sticky top-0 z-50 px-4 h-16 flex items-center justify-between" },
+            React.createElement('div', { className: "flex items-center gap-2 cursor-pointer", onClick: () => { setStatus('idle'); setResult(null); } }, 
+              React.createElement(BookOpen, { className: "text-brand-600" }), React.createElement('h1', { className: "text-xl font-black" }, "DocWise AI")
+            ),
+            React.createElement('div', { className: "flex gap-2" },
+              React.createElement('select', { value: userType, onChange: (e) => setUserType(e.target.value), className: "bg-slate-100 px-3 py-1 rounded-full text-xs font-bold" }, 
+                ['Individual', 'Small Business', 'Student', 'Freelancer'].map(o => React.createElement('option', { key: o, value: o }, o))
+              ),
+              React.createElement('select', { value: language, onChange: (e) => setLanguage(e.target.value), className: "bg-brand-50 text-brand-700 px-3 py-1 rounded-full text-xs font-bold" }, 
+                ['Simple English', 'Spanish', 'French', 'Chinese'].map(o => React.createElement('option', { key: o, value: o }, o))
+              )
+            )
+          ),
+          React.createElement('main', { className: "flex-grow p-4 md:p-12" },
+            status === 'complete' ? React.createElement(AnalysisDashboard, { data: result.comparison || result.analysis, onReset: () => setStatus('idle') }) :
+            React.createElement('div', { className: "max-w-3xl mx-auto text-center space-y-8" },
+              React.createElement('div', null,
+                React.createElement('h2', { className: "text-5xl font-black mb-4" }, "Stop Agreeing Blindly."),
+                React.createElement('p', { className: "text-xl text-slate-500" }, "AI-powered tool to decode legal documents and compare offers instantly.")
+              ),
+              React.createElement('div', { className: "flex justify-center gap-2 p-1.5 bg-slate-200/50 rounded-2xl w-fit mx-auto" },
+                React.createElement('button', { onClick: () => setInputMode('file'), className: `px-8 py-3 rounded-xl font-bold ${inputMode === 'file' ? 'bg-white shadow' : ''}` }, "Upload"),
+                React.createElement('button', { onClick: () => setInputMode('text'), className: `px-8 py-3 rounded-xl font-bold ${inputMode === 'text' ? 'bg-white shadow' : ''}` }, "Paste/Link")
+              ),
+              inputMode === 'file' ? React.createElement(FileUpload, { onFilesSelect: (fs) => processInputs(fs.map(f => ({ type: 'file', ...f }))), isLoading: status === 'analyzing' }) :
+              React.createElement(TextInput, { onScan: (d) => processInputs([{ type: d.type, data: d.content }]), isLoading: status === 'analyzing' }),
+              status === 'analyzing' && React.createElement('div', { className: "mt-8" }, React.createElement(Loader2, { className: "animate-spin mx-auto text-brand-600", size: 40 }), React.createElement('p', { className: "font-bold mt-2" }, "DocWise is decoding..."))
+            )
+          ),
+          React.createElement('footer', { className: "p-8 text-center text-slate-400 text-xs" }, "© 2025 DocWise Intelligence. Educational tool, not legal advice.")
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(React.createElement(React.StrictMode, null, React.createElement(App)));
+    </script>
   </body>
 </html>
